@@ -115,6 +115,64 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(seen["headers"]["OpenAI-Organization"], "org-unit")
         self.assertEqual(seen["headers"]["OpenAI-Project"], "proj_unit")
 
+    def test_anthropic_chat_uses_messages_api(self):
+        seen = {}
+
+        def transport(method, url, headers, body, timeout):
+            seen["url"] = url
+            seen["headers"] = headers
+            seen["body"] = json.loads(body.decode())
+            payload = {
+                "content": [
+                    {"type": "text", "text": "pong"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "read_file",
+                        "input": {"path": "a.c"},
+                    },
+                ]
+            }
+            return 200, json.dumps(payload).encode()
+
+        config = Config(
+            api_key="sk-ant-usr-example-key-1234",
+            base_url="https://api.anthropic.com",
+            model="claude-haiku-4-5-20251001",
+            timeout=5,
+            key_source="test",
+        )
+        reply = CloudAIClient(config, transport).chat(
+            [
+                {"role": "system", "content": "ngắn"},
+                {"role": "user", "content": "đọc"},
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Đọc file",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+        self.assertEqual(seen["url"], "https://api.anthropic.com/v1/messages")
+        self.assertEqual(seen["headers"]["x-api-key"], "sk-ant-usr-example-key-1234")
+        self.assertEqual(seen["headers"]["anthropic-version"], "2023-06-01")
+        self.assertNotIn("Authorization", seen["headers"])
+        self.assertEqual(seen["body"]["system"], "ngắn")
+        self.assertEqual(seen["body"]["messages"][0]["content"], "đọc")
+        self.assertEqual(seen["body"]["tools"][0]["name"], "read_file")
+        self.assertEqual(reply["content"], "pong")
+        self.assertEqual(reply["tool_calls"][0]["id"], "toolu_1")
+        self.assertEqual(reply["tool_calls"][0]["function"]["name"], "read_file")
+        self.assertEqual(
+            json.loads(reply["tool_calls"][0]["function"]["arguments"]),
+            {"path": "a.c"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

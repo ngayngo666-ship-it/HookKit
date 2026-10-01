@@ -9,6 +9,8 @@ from pathlib import Path
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
+ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_CURSOR_BASE = "https://api.cursor.com"
 DEFAULT_GITHUB_API = "https://api.github.com"
@@ -245,6 +247,14 @@ def _is_openai(base_url: str) -> bool:
     return base_url.startswith("https://api.openai.com")
 
 
+def _is_anthropic_key(api_key: str) -> bool:
+    return api_key.startswith("sk-ant-")
+
+
+def _is_anthropic_base(base_url: str) -> bool:
+    return base_url.startswith(ANTHROPIC_BASE_URL)
+
+
 def _https_base(value: str, label: str) -> str:
     base = value.strip().rstrip("/")
     if not base.startswith("https://"):
@@ -299,13 +309,26 @@ def load_settings(
         return placeholder
 
     api_key, key_source = pick("SK_CLOUD_AI_API_KEY", "OPENAI_API_KEY")
-    file_base, _ = pick("SK_CLOUD_AI_BASE_URL", "OPENAI_BASE_URL")
+    file_base, _ = pick("SK_CLOUD_AI_BASE_URL")
+    openai_base_for_cloud, _ = pick("OPENAI_BASE_URL")
+    explicit_base = (base_url or "").strip() or file_base
     resolved_base = _https_base(
-        base_url or file_base or DEFAULT_BASE_URL,
+        explicit_base or openai_base_for_cloud or DEFAULT_BASE_URL,
         "Base URL",
     )
+    if _is_anthropic_key(api_key) and not explicit_base:
+        resolved_base = ANTHROPIC_BASE_URL
     file_model, _ = pick("SK_CLOUD_AI_MODEL", "OPENAI_MODEL")
-    resolved_model = (model or file_model or DEFAULT_MODEL).strip()
+    chosen_model = (model or "").strip()
+    if not chosen_model:
+        chosen_model = file_model
+    if (
+        _is_anthropic_base(resolved_base)
+        and (not chosen_model or chosen_model == DEFAULT_MODEL)
+        and not (model or "").strip()
+    ):
+        chosen_model = ANTHROPIC_MODEL
+    resolved_model = (chosen_model or DEFAULT_MODEL).strip()
     if not resolved_model:
         raise ConfigError("Thiếu tên model.")
 

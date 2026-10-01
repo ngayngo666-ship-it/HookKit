@@ -27,12 +27,16 @@ def redact(text: str, secret: str) -> str:
 
 def endpoint(base_url: str, path: str) -> str:
     base = base_url.rstrip("/")
-    for suffix in ("/chat/completions", "/models"):
+    for suffix in ("/chat/completions", "/messages", "/models"):
         if base.endswith(suffix):
             base = base[: -len(suffix)]
     if not path.startswith("/"):
         path = "/" + path
     return base + path
+
+
+def is_anthropic(base_url: str) -> bool:
+    return base_url.startswith("https://api.anthropic.com")
 
 
 def urllib_transport(
@@ -49,6 +53,83 @@ def urllib_transport(
     except urllib.error.HTTPError as exc:
         payload = exc.read()
         return exc.code, payload
+
+
+def _anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        if not isinstance(function, dict) or not function.get("name"):
+            continue
+        schema = function.get("parameters") or {"type": "object", "properties": {}}
+        converted.append(
+            {
+                "name": str(function["name"]),
+                "description": str(function.get("description") or ""),
+                "input_schema": schema if isinstance(schema, dict) else {"type": "object"},
+            }
+        )
+    return converted
+
+
+def _anthropic_messages(
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    system_parts: list[str] = []
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            text = message_text(message.get("content")).strip()
+            if text:
+                system_parts.append(text)
+            continue
+        if role == "assistant":
+            blocks: list[dict[str, Any]] = []
+            text = message_text(message.get("content"))
+            if text:
+                blocks.append({"type": "text", "text": text})
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                raw = function.get("arguments") or "{}"
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw) if raw.strip() else {}
+                    except json.JSONDecodeError:
+                        parsed = {}
+                else:
+                    parsed = raw
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": str(call.get("id") or "tool"),
+                        "name": str(function.get("name") or ""),
+                        "input": parsed if isinstance(parsed, dict) else {},
+                    }
+                )
+            if not blocks:
+                blocks.append({"type": "text", "text": ""})
+            converted.append({"role": "assistant", "content": blocks})
+            continue
+        if role == "tool":
+            block = {
+                "type": "tool_result",
+                "tool_use_id": str(message.get("tool_call_id") or ""),
+                "content": message_text(message.get("content")),
+            }
+            if (
+                converted
+                and converted[-1]["role"] == "user"
+                and isinstance(converted[-1]["content"], list)
+            ):
+                converted[-1]["content"].append(block)
+            else:
+                converted.append({"role": "user", "content": [block]})
+            continue
+        converted.append({"role": "user", "content": message_text(message.get("content"))})
+    return "\n".join(system_parts), converted
 
 
 def message_text(content: Any) -> str:
@@ -77,6 +158,8 @@ class CloudAIClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        if is_anthropic(self.config.base_url):
+            return self._anthropic_chat(messages, tools)
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -99,7 +182,8 @@ class CloudAIClient:
         }
 
     def list_models(self) -> list[str]:
-        data = self._get("/models")
+        path = "/v1/models" if is_anthropic(self.config.base_url) else "/models"
+        data = self._get(path)
         rows = data.get("data")
         if not isinstance(rows, list):
             raise CloudAIError("API không trả về danh sách model.")
@@ -111,12 +195,63 @@ class CloudAIClient:
                 names.append(row)
         return names
 
+    def _anthropic_chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        system, converted = _anthropic_messages(messages)
+        payload: dict[str, Any] = {
+            "model": self.config.model,
+            "max_tokens": 4096,
+            "messages": converted,
+        }
+        if system:
+            payload["system"] = system
+        anthropic_tools = _anthropic_tools(tools)
+        if anthropic_tools:
+            payload["tools"] = anthropic_tools
+        data = self._post("/v1/messages", payload)
+        blocks = data.get("content")
+        if not isinstance(blocks, list):
+            raise CloudAIError("API không trả về content.")
+        texts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                texts.append(str(block.get("text") or ""))
+            elif block.get("type") == "tool_use":
+                tool_calls.append(
+                    {
+                        "id": str(block.get("id") or ""),
+                        "type": "function",
+                        "function": {
+                            "name": str(block.get("name") or ""),
+                            "arguments": json.dumps(
+                                block.get("input") or {},
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                )
+        return {
+            "role": "assistant",
+            "content": "".join(texts),
+            "tool_calls": tool_calls,
+        }
+
     def _headers(self) -> dict[str, str]:
         headers = {
-            "Authorization": f"Bearer {self.config.api_key}",
             "Accept": "application/json",
             "User-Agent": "skai-cloud-ai",
         }
+        if is_anthropic(self.config.base_url):
+            headers["x-api-key"] = self.config.api_key
+            headers["anthropic-version"] = "2023-06-01"
+            return headers
+        headers["Authorization"] = f"Bearer {self.config.api_key}"
         if self.config.organization:
             headers["OpenAI-Organization"] = self.config.organization
         if self.config.project:

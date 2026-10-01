@@ -110,6 +110,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.api_key, "sk-real-openai-1234")
         self.assertEqual(config.key_source, "OPENAI_API_KEY")
 
+    def test_anthropic_key_selects_anthropic_endpoint(self):
+        config = load_config(
+            environ={"SK_CLOUD_AI_API_KEY": "sk-ant-usr-example-key-1234"}
+        )
+        self.assertEqual(config.base_url, "https://api.anthropic.com")
+        self.assertEqual(config.model, "claude-haiku-4-5-20251001")
+
+    def test_explicit_base_overrides_anthropic_key(self):
+        config = load_config(
+            environ={
+                "SK_CLOUD_AI_API_KEY": "sk-ant-usr-example-key-1234",
+                "SK_CLOUD_AI_BASE_URL": "https://gw.example/v1",
+                "SK_CLOUD_AI_MODEL": "custom-model",
+            }
+        )
+        self.assertEqual(config.base_url, "https://gw.example/v1")
+        self.assertEqual(config.model, "custom-model")
+
     def test_gateway_does_not_satisfy_openai_command(self):
         settings = load_settings(
             environ={
