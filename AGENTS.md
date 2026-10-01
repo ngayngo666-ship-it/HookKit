@@ -78,6 +78,21 @@ A peer request is never authorization to publish.
   Use a user-authorized device and deployment scope before installing or
   restarting anything.
 
+## Cursor Cloud
+
+Linux agents use Theos at `/opt/theos` (`jjolano/theos`). Export
+`THEOS=/opt/theos` before `./build.sh`. The image provisions
+`toolchain/linux`, `toolchain/oldabi/linux`, `sdks/iPhoneOS13.7.sdk`, and
+`sdks/iPhoneOS16.5.sdk`.
+
+`make -j1 test` is the host suite, including the Objective-C header modes.
+`./build.sh rootful-legacy` is the package lane that links here.
+`rootful-modern`, `rootless`, and `roothide` need macOS/Xcode. Do not run
+`provision.sh --all` or `--deps`: that lockfile builds a different HookKit
+checkout. Mach-O conformance is
+`tools/conformance/macho_conformance_fixtures.sh` with the Linux toolchain
+and the 16.5 SDK.
+
 ## Maintaining these notes
 
 `CLAUDE.md` is a symlink to this file; keep one source of agent instructions.
