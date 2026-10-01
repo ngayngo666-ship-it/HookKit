@@ -51,6 +51,8 @@ python3 tools/sk-cloud-ai/skai.py openai edit "sửa comment" --file src/core/HK
 
 ## Cloud AI
 
+Base URL: `https://api.incord.ai/v1/cloud`. Key gửi header `Authorization: Bearer`. `GET /v1/cloud/models` là danh sách model công khai; chat cần key hợp lệ.
+
 ```bash
 python3 tools/sk-cloud-ai/skai.py models
 python3 tools/sk-cloud-ai/skai.py chat "hàm rebind đang làm gì" --file src/core/HKPlan.c

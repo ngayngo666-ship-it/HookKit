@@ -115,6 +115,7 @@ class CloudAIClient:
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Accept": "application/json",
+            "User-Agent": "skai-cloud-ai",
         }
         if self.config.organization:
             headers["OpenAI-Organization"] = self.config.organization

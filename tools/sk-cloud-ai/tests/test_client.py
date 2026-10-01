@@ -63,6 +63,7 @@ class ClientTests(unittest.TestCase):
         )
         self.assertEqual(seen["url"], "https://gw.example/v1/chat/completions")
         self.assertEqual(seen["headers"]["Authorization"], "Bearer sk-secret-key-abcd")
+        self.assertEqual(seen["headers"]["User-Agent"], "skai-cloud-ai")
         self.assertNotIn("OpenAI-Organization", seen["headers"])
         self.assertEqual(seen["body"]["model"], "demo")
         self.assertEqual(seen["body"]["messages"][0]["content"], "đọc")
