@@ -77,6 +77,49 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             settings.require_github()
 
+    def test_openai_key_is_separate_from_gateway(self):
+        settings = load_settings(
+            environ={
+                "SK_CLOUD_AI_API_KEY": "sk-gateway-key-1234",
+                "SK_CLOUD_AI_BASE_URL": "https://gw.example/v1",
+                "OPENAI_API_KEY": "sk-openai-key-9876",
+                "OPENAI_ORG_ID": "org-unit",
+                "OPENAI_PROJECT_ID": "proj_unit",
+                "OPENAI_MODEL": "gpt-4o-mini",
+            }
+        )
+        cloud = settings.require_cloud()
+        openai = settings.require_openai()
+        self.assertEqual(cloud.api_key, "sk-gateway-key-1234")
+        self.assertEqual(cloud.base_url, "https://gw.example/v1")
+        self.assertEqual(cloud.organization, "")
+        self.assertEqual(openai.api_key, "sk-openai-key-9876")
+        self.assertEqual(openai.base_url, "https://api.openai.com/v1")
+        self.assertEqual(openai.model, "gpt-4o-mini")
+        self.assertEqual(openai.organization, "org-unit")
+        self.assertEqual(openai.project, "proj_unit")
+        self.assertNotIn("sk-openai-key-9876", settings.status_text())
+
+    def test_placeholder_cloud_key_uses_openai(self):
+        config = load_config(
+            environ={
+                "SK_CLOUD_AI_API_KEY": "sk-your-api-key",
+                "OPENAI_API_KEY": "sk-real-openai-1234",
+            }
+        )
+        self.assertEqual(config.api_key, "sk-real-openai-1234")
+        self.assertEqual(config.key_source, "OPENAI_API_KEY")
+
+    def test_gateway_does_not_satisfy_openai_command(self):
+        settings = load_settings(
+            environ={
+                "SK_CLOUD_AI_API_KEY": "sk-gateway-key-1234",
+                "SK_CLOUD_AI_BASE_URL": "https://gw.example/v1",
+            }
+        )
+        with self.assertRaises(ConfigError):
+            settings.require_openai()
+
 
 if __name__ == "__main__":
     unittest.main()

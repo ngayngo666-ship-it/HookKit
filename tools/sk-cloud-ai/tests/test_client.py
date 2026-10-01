@@ -63,6 +63,7 @@ class ClientTests(unittest.TestCase):
         )
         self.assertEqual(seen["url"], "https://gw.example/v1/chat/completions")
         self.assertEqual(seen["headers"]["Authorization"], "Bearer sk-secret-key-abcd")
+        self.assertNotIn("OpenAI-Organization", seen["headers"])
         self.assertEqual(seen["body"]["model"], "demo")
         self.assertEqual(seen["body"]["messages"][0]["content"], "đọc")
         self.assertEqual(reply["tool_calls"][0]["function"]["name"], "read_file")
@@ -89,6 +90,29 @@ class ClientTests(unittest.TestCase):
 
         names = CloudAIClient(_config(), transport).list_models()
         self.assertEqual(names, ["a", "b"])
+
+    def test_openai_org_and_project_headers(self):
+        seen = {}
+
+        def transport(method, url, headers, body, timeout):
+            seen["headers"] = headers
+            seen["url"] = url
+            return 200, json.dumps({"data": [{"id": "gpt-4o-mini"}]}).encode()
+
+        config = _config()
+        config = type(config)(
+            api_key=config.api_key,
+            base_url="https://api.openai.com/v1",
+            model=config.model,
+            timeout=config.timeout,
+            key_source=config.key_source,
+            organization="org-unit",
+            project="proj_unit",
+        )
+        CloudAIClient(config, transport).list_models()
+        self.assertEqual(seen["url"], "https://api.openai.com/v1/models")
+        self.assertEqual(seen["headers"]["OpenAI-Organization"], "org-unit")
+        self.assertEqual(seen["headers"]["OpenAI-Project"], "proj_unit")
 
 
 if __name__ == "__main__":

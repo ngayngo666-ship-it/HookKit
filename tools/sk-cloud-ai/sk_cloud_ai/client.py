@@ -112,10 +112,15 @@ class CloudAIClient:
         return names
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Accept": "application/json",
         }
+        if self.config.organization:
+            headers["OpenAI-Organization"] = self.config.organization
+        if self.config.project:
+            headers["OpenAI-Project"] = self.config.project
+        return headers
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

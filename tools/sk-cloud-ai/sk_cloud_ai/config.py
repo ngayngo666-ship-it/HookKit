@@ -12,6 +12,8 @@ DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_CURSOR_BASE = "https://api.cursor.com"
 DEFAULT_GITHUB_API = "https://api.github.com"
+DEFAULT_XCODE_CONFIGURATION = "Debug"
+DEFAULT_XCODE_DESTINATION = "generic/platform=iOS"
 
 PLACEHOLDERS = {
     "sk-...",
@@ -36,6 +38,8 @@ class Config:
     model: str
     timeout: float
     key_source: str
+    organization: str = ""
+    project: str = ""
 
     def redacted_key(self) -> str:
         return redact_secret(self.api_key)
@@ -54,16 +58,54 @@ class Settings:
     cursor_api_key: str
     cursor_api_key_source: str
     cursor_base_url: str
+    xcode_project: str
+    xcode_project_source: str
+    xcode_workspace: str
+    xcode_workspace_source: str
+    xcode_scheme: str
+    xcode_scheme_source: str
+    xcode_configuration: str
+    xcode_configuration_source: str
+    xcode_destination: str
+    xcode_destination_source: str
+    xcode_sdk: str
+    openai_api_key: str
+    openai_api_key_source: str
+    openai_base_url: str
+    openai_model: str
+    openai_organization: str
+    openai_project: str
 
     def status_text(self) -> str:
         lines = [
             _status("cloud_ai", self.api_key, self.key_source),
             f"cloud_ai_base: {self.base_url}",
             f"cloud_ai_model: {self.model}",
+            self._openai_status(),
+            f"openai_base: {self.openai_base_url or DEFAULT_BASE_URL}",
+            f"openai_model: {self.openai_model or DEFAULT_MODEL}",
+            _plain("openai_org", self.openai_organization, ""),
+            _plain("openai_project", self.openai_project, ""),
             _status("github", self.github_token, self.github_token_source),
             f"github_api: {self.github_api_base}",
             _status("cursor", self.cursor_api_key, self.cursor_api_key_source),
             f"cursor_base: {self.cursor_base_url}",
+            _plain("xcode_project", self.xcode_project, self.xcode_project_source),
+            _plain("xcode_workspace", self.xcode_workspace, self.xcode_workspace_source),
+            _plain("xcode_scheme", self.xcode_scheme, self.xcode_scheme_source),
+            _plain(
+                "xcode_configuration",
+                self.xcode_configuration,
+                self.xcode_configuration_source,
+                DEFAULT_XCODE_CONFIGURATION,
+            ),
+            _plain(
+                "xcode_destination",
+                self.xcode_destination,
+                self.xcode_destination_source,
+                DEFAULT_XCODE_DESTINATION,
+            ),
+            _plain("xcode_sdk", self.xcode_sdk, ""),
             f"timeout: {self.timeout}",
         ]
         return "\n".join(lines)
@@ -79,7 +121,45 @@ class Settings:
             model=self.model,
             timeout=self.timeout,
             key_source=self.key_source,
+            organization=self.openai_organization if _is_openai(self.base_url) else "",
+            project=self.openai_project if _is_openai(self.base_url) else "",
         )
+
+    def require_openai(self) -> Config:
+        key = self.openai_api_key
+        source = self.openai_api_key_source
+        model = self.openai_model or DEFAULT_MODEL
+        usable = bool(key) and key not in PLACEHOLDERS
+        if not usable and _is_openai(self.base_url) and self.api_key not in PLACEHOLDERS:
+            key = self.api_key
+            source = self.key_source
+            if not self.openai_model:
+                model = self.model or DEFAULT_MODEL
+        _require(
+            key,
+            source,
+            "OPENAI_API_KEY",
+            "Chưa gắn OPENAI_API_KEY. Tạo key tại https://platform.openai.com/api-keys",
+        )
+        base = _https_base(self.openai_base_url or DEFAULT_BASE_URL, "OpenAI API")
+        return Config(
+            api_key=key,
+            base_url=base,
+            model=model,
+            timeout=self.timeout,
+            key_source=source,
+            organization=self.openai_organization,
+            project=self.openai_project,
+        )
+
+    def _openai_status(self) -> str:
+        if self.openai_api_key and self.openai_api_key not in PLACEHOLDERS:
+            return _status("openai", self.openai_api_key, self.openai_api_key_source)
+        if self.api_key and self.api_key not in PLACEHOLDERS and _is_openai(self.base_url):
+            return "openai: dùng chung cloud_ai"
+        if self.openai_api_key:
+            return _status("openai", self.openai_api_key, self.openai_api_key_source)
+        return "openai: chưa gắn"
 
     def require_github(self) -> str:
         _require(
@@ -104,6 +184,15 @@ def redact_secret(secret: str) -> str:
     if len(secret) <= 8:
         return "***"
     return f"{secret[:3]}…{secret[-4:]}"
+
+
+def _plain(label: str, value: str, source: str, default: str = "") -> str:
+    if value:
+        suffix = f"  nguồn: {source}" if source else ""
+        return f"{label}: {value}{suffix}"
+    if default:
+        return f"{label}: {default} (mặc định)"
+    return f"{label}: chưa gắn"
 
 
 def _status(label: str, value: str, source: str) -> str:
@@ -152,6 +241,10 @@ def _first_existing(candidates: list[Path]) -> Path | None:
     return None
 
 
+def _is_openai(base_url: str) -> bool:
+    return base_url.startswith("https://api.openai.com")
+
+
 def _https_base(value: str, label: str) -> str:
     base = value.strip().rstrip("/")
     if not base.startswith("https://"):
@@ -184,13 +277,26 @@ def load_settings(
             file_source = str(found)
 
     def pick(*names: str) -> tuple[str, str]:
+        placeholder = ("", "")
         for name in names:
-            if env.get(name):
-                return env[name].strip(), name
+            if not env.get(name):
+                continue
+            value = env[name].strip()
+            if value in PLACEHOLDERS:
+                placeholder = (value, name)
+                continue
+            return value, name
         for name in names:
-            if file_values.get(name):
-                return file_values[name].strip(), file_source or name
-        return "", ""
+            if not file_values.get(name):
+                continue
+            value = file_values[name].strip()
+            source = file_source or name
+            if value in PLACEHOLDERS:
+                if not placeholder[0]:
+                    placeholder = (value, source)
+                continue
+            return value, source
+        return placeholder
 
     api_key, key_source = pick("SK_CLOUD_AI_API_KEY", "OPENAI_API_KEY")
     file_base, _ = pick("SK_CLOUD_AI_BASE_URL", "OPENAI_BASE_URL")
@@ -217,6 +323,17 @@ def load_settings(
     github_base_raw, _ = pick("GITHUB_API_BASE", "GITHUB_API_URL")
     cursor_key, cursor_source = pick("CURSOR_API_KEY")
     cursor_base_raw, _ = pick("CURSOR_API_BASE")
+    xcode_project, xcode_project_source = pick("XCODE_PROJECT")
+    xcode_workspace, xcode_workspace_source = pick("XCODE_WORKSPACE")
+    xcode_scheme, xcode_scheme_source = pick("XCODE_SCHEME")
+    xcode_configuration, xcode_configuration_source = pick("XCODE_CONFIGURATION")
+    xcode_destination, xcode_destination_source = pick("XCODE_DESTINATION")
+    xcode_sdk, _ = pick("XCODE_SDK")
+    openai_key, openai_source = pick("OPENAI_API_KEY")
+    openai_base, _ = pick("OPENAI_BASE_URL")
+    openai_model, _ = pick("OPENAI_MODEL")
+    openai_org, _ = pick("OPENAI_ORG_ID", "OPENAI_ORGANIZATION")
+    openai_project, _ = pick("OPENAI_PROJECT_ID", "OPENAI_PROJECT")
 
     return Settings(
         api_key=api_key,
@@ -230,6 +347,23 @@ def load_settings(
         cursor_api_key=cursor_key,
         cursor_api_key_source=cursor_source,
         cursor_base_url=_https_base(cursor_base_raw or DEFAULT_CURSOR_BASE, "Cursor API"),
+        xcode_project=xcode_project,
+        xcode_project_source=xcode_project_source,
+        xcode_workspace=xcode_workspace,
+        xcode_workspace_source=xcode_workspace_source,
+        xcode_scheme=xcode_scheme,
+        xcode_scheme_source=xcode_scheme_source,
+        xcode_configuration=xcode_configuration,
+        xcode_configuration_source=xcode_configuration_source,
+        xcode_destination=xcode_destination,
+        xcode_destination_source=xcode_destination_source,
+        xcode_sdk=xcode_sdk,
+        openai_api_key=openai_key,
+        openai_api_key_source=openai_source,
+        openai_base_url=_https_base(openai_base, "OpenAI API") if openai_base else "",
+        openai_model=openai_model,
+        openai_organization=openai_org,
+        openai_project=openai_project,
     )
 
 
