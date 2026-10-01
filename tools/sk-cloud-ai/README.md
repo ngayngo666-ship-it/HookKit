@@ -51,7 +51,7 @@ python3 tools/sk-cloud-ai/skai.py openai edit "sửa comment" --file src/core/HK
 
 ## Cloud AI
 
-Base URL: `https://api.incord.ai/v1/cloud`. Key gửi header `Authorization: Bearer`. `GET /v1/cloud/models` là danh sách model công khai; chat cần key hợp lệ.
+Key `sk-ant-` (Anthropic) tự gọi `https://api.anthropic.com` bằng header `x-api-key`, model mặc định `claude-haiku-4-5-20251001`. Key gateway khác dùng `SK_CLOUD_AI_BASE_URL`. Incord Cloud AI: `https://api.incord.ai/v1/cloud`, header `Authorization: Bearer`. Chat cần key còn hạn và tài khoản còn credit.
 
 ```bash
 python3 tools/sk-cloud-ai/skai.py models
