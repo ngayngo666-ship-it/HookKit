@@ -1,0 +1,16 @@
+import "../styles/globals.css";
+
+export const metadata = {
+  title: "My Web Tool",
+  description: "Hỏi OpenAI hoặc Claude từ một trang.",
+};
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="vi">
+      <body className="min-h-screen bg-stone-100 text-stone-900 antialiased">
+        {children}
+      </body>
+    </html>
+  );
+}
