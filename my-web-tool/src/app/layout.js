@@ -2,7 +2,7 @@ import "../styles/globals.css";
 
 export const metadata = {
   title: "My Web Tool",
-  description: "Hỏi OpenAI hoặc Claude từ một trang.",
+  description: "Hỏi OpenAI, Claude hoặc Gemini từ một trang.",
 };
 
 export default function RootLayout({ children }) {

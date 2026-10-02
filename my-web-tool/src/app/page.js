@@ -6,6 +6,7 @@ import { askModel } from "../utils/api";
 const PROVIDERS = [
   { id: "openai", label: "OpenAI" },
   { id: "claude", label: "Claude" },
+  { id: "gemini", label: "Gemini" },
 ];
 
 export default function HomePage() {
@@ -36,13 +37,13 @@ export default function HomePage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">My Web Tool</h1>
           <p className="text-sm text-stone-600">
-            Gửi câu hỏi tới OpenAI hoặc Claude. Khóa API chỉ ở máy chủ.
+            Gửi câu hỏi tới OpenAI, Claude hoặc Gemini. Khóa API chỉ ở máy chủ.
           </p>
         </div>
       </header>
 
       <form onSubmit={onSubmit} className="mt-8 flex flex-col gap-4">
-        <fieldset className="flex gap-2">
+        <fieldset className="flex flex-wrap gap-2">
           <legend className="sr-only">Nhà cung cấp</legend>
           {PROVIDERS.map((item) => (
             <label
