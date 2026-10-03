@@ -35,6 +35,8 @@ export async function POST(request) {
   } catch (error) {
     const messages = {
       MISSING_GEMINI_API_KEY: "Thiếu GEMINI_API_KEY trên máy chủ.",
+      MISSING_OPENAI_CREDENTIALS:
+        "Thiếu OPENAI_API_KEY hoặc AI_GATEWAY_API_KEY trên máy chủ.",
       MISSING_AI_GATEWAY_CREDENTIALS:
         "Thiếu AI_GATEWAY_API_KEY hoặc VERCEL_OIDC_TOKEN trên máy chủ.",
     };

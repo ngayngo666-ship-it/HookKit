@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 
 const MODELS = {
@@ -15,6 +16,11 @@ const MODELS = {
 export const PROVIDERS = ["openai", "claude", "gemini"];
 
 function getModel(provider) {
+  if (provider === "openai" && process.env.OPENAI_API_KEY) {
+    const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    return openai(MODELS.openai.replace(/^openai\//, ""));
+  }
+
   if (provider === "gemini") {
     if (!process.env.GEMINI_API_KEY) {
       throw new Error("MISSING_GEMINI_API_KEY");
@@ -30,7 +36,11 @@ function getModel(provider) {
     throw new Error("INVALID_PROVIDER");
   }
   if (!process.env.AI_GATEWAY_API_KEY && !process.env.VERCEL_OIDC_TOKEN) {
-    throw new Error("MISSING_AI_GATEWAY_CREDENTIALS");
+    throw new Error(
+      provider === "openai"
+        ? "MISSING_OPENAI_CREDENTIALS"
+        : "MISSING_AI_GATEWAY_CREDENTIALS",
+    );
   }
 
   return MODELS[provider];
