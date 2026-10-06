@@ -26,6 +26,8 @@ my-web-tool/       # App chat AI riêng (không thuộc bot két)
 5. **Tiền chỉ đổi qua Ledger** trong 1 transaction, 1 lần / bill (UNIQUE). NLU chỉ nhận ý định.
 6. **SQLite WAL** — bill chờ + số dư sống sót khi bot chết (`DATA_DIR` / `DB_PATH`).
 7. **Một process** `python main.py` (Railway/Docker cùng lệnh).
+8. **Trả lời đúng nhóm gửi tin** — khách nhóm A gửi lệnh thì bot reply trong nhóm A (không chỉ admin nhận). Thành viên nhóm tự được cấp `nhan_vien`; admin Telegram của nhóm → `quan_tri`.
+9. **Nhóm không thấy bot trả lời?** Gõ `/kiemtra` trong nhóm. Thường do Privacy Mode: BotFather → `/setprivacy` → Disable, hoặc cấp bot làm Quản trị nhóm.
 
 ## Cài
 

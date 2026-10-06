@@ -41,12 +41,22 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 # --- Telegram ---
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN") or _env("BOT_TOKEN")
-ADMIN_CHAT_ID = _env("ADMIN_CHAT_ID") or _env("ADMIN_ID")
+# User id Admin (số cá nhân Telegram). KHÔNG dùng id nhóm ở đây.
 ADMIN_USER_IDS = [
     x.strip()
-    for x in (_env("ADMIN_USER_IDS") or (_env("ADMIN_CHAT_ID") or "")).split(",")
+    for x in (_env("ADMIN_USER_IDS") or _env("ADMIN_CHAT_ID") or _env("ADMIN_ID") or "").split(",")
     if x.strip()
 ]
+# Giữ alias cũ — chỉ là user id admin, không phải "chỉ chat này được trả lời"
+ADMIN_CHAT_ID = ADMIN_USER_IDS[0] if ADMIN_USER_IDS else None
+# Rỗng = mọi nhóm/chat đều được bot trả lời tại chỗ. Có list thì chỉ các chat đó.
+ALLOWED_CHAT_IDS = [
+    x.strip()
+    for x in (_env("ALLOWED_CHAT_IDS") or "").split(",")
+    if x.strip()
+]
+# Tự cấp quyền: thành viên nhóm = nhân viên; admin Telegram của nhóm = quản trị
+AUTO_GRANT_GROUP_MEMBERS = _env_bool("AUTO_GRANT_GROUP_MEMBERS", True)
 
 # --- Lưu trữ ---
 # Ưu tiên volume bền (/data trên Railway). Fallback thư mục local.
