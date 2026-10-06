@@ -1,22 +1,10 @@
 #!/usr/bin/env python3
 """Bot két Telegram — điểm vào duy nhất (python main.py).
 
-Cấu trúc:
-  config.py        biến môi trường + nguyên lý vận hành
-  bill_scanner.py  đọc ảnh / paste CK → amount, STK, NH, ND, VietQR
-  ledger.py        sổ quỹ SQLite (bill chờ, cộng/trừ, phí, chốt)
-  nlu.py           hiểu lệnh chữ tiếng Việt (local, không AI)
-  excel_export.py  xuất báo cáo .xlsx
-  main.py          (file này) nối Telegram ↔ các module trên
-
-Luồng:
-  ảnh bill / paste CK  → scan/parse → submit_bill → trả phiếu + QR (nếu đủ)
-  nút Xác nhận/Xuất    → confirm_bill / export_bill → answer callback 1 lần
-  lệnh chữ             → nlu.understand → Ledger (không tự động trừ chỉ vì chat)
-
-Quan trọng — trả lời ĐÚNG nhóm gửi tin (không chỉ admin chat):
-  Khách ở nhóm A gửi lệnh → bot reply trong nhóm A.
-  Admin chỉ là người có quyền cao, không phải nơi nhận thay mọi tin.
+Đồng bộ mọi nhóm:
+  - Đọc CK chữ (STK · NH · số tiền · ND) + ảnh QR/bill (photo hoặc file ảnh)
+  - Trả lời đúng nhóm khách gửi
+  - Cùng bộ chức năng (groups.SYNCED_FEATURES) trên mọi nhóm đã mở
 """
 from __future__ import annotations
 
@@ -29,6 +17,7 @@ from telegram.constants import ChatMemberStatus, ChatType
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -36,8 +25,9 @@ from telegram.ext import (
 )
 
 import config
-from bill_scanner import parse_text, scan_image
+from bill_scanner import merge_payment_info, parse_text, scan_image
 from excel_export import export_xlsx
+from groups import SYNCED_FEATURES, GroupRegistry
 from ledger import Ledger, summary_text, vnd
 from nlu import understand
 
@@ -47,19 +37,26 @@ logging.basicConfig(
 )
 log = logging.getLogger("ket-bot")
 
-# Callback data: action:bill_id
 CB_CONFIRM = "cf"
 CB_EXPORT = "ex"
 CB_REJECT = "rj"
-
 GROUP_TYPES = {ChatType.GROUP, ChatType.SUPERGROUP}
+IMAGE_MIME_PREFIXES = ("image/",)
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 
 
 def get_ledger(context: ContextTypes.DEFAULT_TYPE) -> Ledger:
     return context.application.bot_data["ledger"]
 
 
-def ket_id(chat_id) -> str:
+def get_groups(context: ContextTypes.DEFAULT_TYPE) -> GroupRegistry:
+    return context.application.bot_data["groups"]
+
+
+def resolve_ket_id(chat_id) -> str:
+    """Sổ quỹ: SHARED_KET_ID nếu đồng bộ két; không thì mỗi nhóm một sổ."""
+    if config.SHARED_KET_ID:
+        return config.SHARED_KET_ID
     return str(chat_id)
 
 
@@ -68,31 +65,33 @@ def uid(user) -> str:
 
 
 def chat_allowed(chat_id) -> bool:
-    """Rỗng ALLOWED_CHAT_IDS = mọi nhóm được dùng. Có list thì chỉ các id đó."""
     if not config.ALLOWED_CHAT_IDS:
         return True
     return str(chat_id) in config.ALLOWED_CHAT_IDS
 
 
 async def reply_here(update: Update, text: str, **kwargs) -> None:
-    """Luôn trả lời đúng chat đang nói — không chuyển sang admin chat."""
     msg = update.effective_message
     if not msg:
         return
     await msg.reply_text(text, **kwargs)
 
 
-async def ensure_user(lg: Ledger, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
-    """Bootstrap admin env; tự cấp quyền thành viên/admin nhóm để khách không bị im.
+def sync_group(context: ContextTypes.DEFAULT_TYPE, chat) -> dict | None:
+    """Ghi nhận nhóm + ép cùng bộ chức năng đồng bộ."""
+    if not chat:
+        return None
+    reg = get_groups(context)
+    title = getattr(chat, "title", None) or getattr(chat, "full_name", None)
+    return reg.touch(chat.id, title=title, enabled=True)
 
-    Trả về role hiện tại (hoặc None nếu chưa có).
-    """
+
+async def ensure_user(lg: Ledger, update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
     user = update.effective_user
     chat = update.effective_chat
     if not user or user.is_bot:
         return None
 
-    # Bootstrap admin từ env (user id cá nhân)
     for admin_id in config.bootstrap_admin_ids():
         with lg._tx(write=False) as db:
             exists = db.execute("SELECT 1 FROM users WHERE user_id=?", (admin_id,)).fetchone()
@@ -107,7 +106,6 @@ async def ensure_user(lg: Ledger, update: Update, context: ContextTypes.DEFAULT_
         row = db.execute("SELECT role FROM users WHERE user_id=?", (user_id,)).fetchone()
     role = row["role"] if row else None
 
-    # Admin env luôn giữ admin
     if user_id in set(config.bootstrap_admin_ids()):
         if role != "admin":
             lg.add_user(user_id, "admin", name=name, actor=None)
@@ -117,7 +115,6 @@ async def ensure_user(lg: Ledger, update: Update, context: ContextTypes.DEFAULT_
     if not config.AUTO_GRANT_GROUP_MEMBERS:
         return role
 
-    # Trong nhóm: admin/owner Telegram → quan_tri; thành viên → nhan_vien
     if chat and chat.type in GROUP_TYPES:
         try:
             member = await context.bot.get_chat_member(chat.id, user.id)
@@ -130,14 +127,12 @@ async def ensure_user(lg: Ledger, update: Update, context: ContextTypes.DEFAULT_
             is_tg_admin = False
 
         want = "quan_tri" if is_tg_admin else "nhan_vien"
-        # Không hạ admin hệ thống; không đè quan_tri xuống nhan_vien nếu đã có sẵn cao hơn
         rank = {"nhan_vien": 1, "quan_tri": 2, "admin": 3}
         if role is None or rank.get(role, 0) < rank[want]:
             lg.add_user(user_id, want, name=name, actor=None)
             log.info("Auto-grant %s → %s (chat=%s)", user_id, want, chat.id)
             role = want
     elif role is None and chat and chat.type == ChatType.PRIVATE:
-        # Chat riêng: cấp nhân viên để vẫn gửi được bill (không im)
         lg.add_user(user_id, "nhan_vien", name=name, actor=None)
         role = "nhan_vien"
 
@@ -146,19 +141,15 @@ async def ensure_user(lg: Ledger, update: Update, context: ContextTypes.DEFAULT_
 
 def bill_keyboard(bill_id: int, direction: str) -> InlineKeyboardMarkup:
     if direction == "out":
-        rows = [
-            [
-                InlineKeyboardButton("✅ Xuất bill (trừ két)", callback_data=f"{CB_EXPORT}:{bill_id}"),
-                InlineKeyboardButton("❌ Hủy", callback_data=f"{CB_REJECT}:{bill_id}"),
-            ]
-        ]
+        rows = [[
+            InlineKeyboardButton("✅ Xuất bill (trừ két)", callback_data=f"{CB_EXPORT}:{bill_id}"),
+            InlineKeyboardButton("❌ Hủy", callback_data=f"{CB_REJECT}:{bill_id}"),
+        ]]
     else:
-        rows = [
-            [
-                InlineKeyboardButton("✅ Xác nhận (cộng két)", callback_data=f"{CB_CONFIRM}:{bill_id}"),
-                InlineKeyboardButton("❌ Hủy", callback_data=f"{CB_REJECT}:{bill_id}"),
-            ]
-        ]
+        rows = [[
+            InlineKeyboardButton("✅ Xác nhận (cộng két)", callback_data=f"{CB_CONFIRM}:{bill_id}"),
+            InlineKeyboardButton("❌ Hủy", callback_data=f"{CB_REJECT}:{bill_id}"),
+        ]]
     return InlineKeyboardMarkup(rows)
 
 
@@ -184,7 +175,6 @@ def format_bill_card(info: dict, r: dict, direction: str) -> str:
 
 
 def looks_like_ck(text: str) -> bool:
-    """Đoán tin chuyển khoản / paste CK (không phải lệnh ngắn)."""
     if not text or len(text.strip()) < 8:
         return False
     cmd = understand(text)
@@ -194,41 +184,122 @@ def looks_like_ck(text: str) -> bool:
     return bool(info.get("amount") or info.get("account") or info.get("bank") or info.get("vietqr_url"))
 
 
-async def gate_chat(update: Update) -> bool:
-    """True = được xử lý. Sai thì báo ngay trong nhóm đó (không im, không chỉ báo admin)."""
+def direction_from_caption(caption: str | None) -> str:
+    c = (caption or "").strip().lower()
+    if c in ("ra", "out", "chi", "xuất", "xuat") or c.startswith("ra ") or c.startswith("chi "):
+        return "out"
+    return config.DEFAULT_DIRECTION
+
+
+async def gate_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat = update.effective_chat
     if not chat:
         return False
-    if chat_allowed(chat.id):
-        return True
-    await reply_here(
-        update,
-        f"Nhóm này chưa được mở bot (chat_id={chat.id}). Admin thêm id vào ALLOWED_CHAT_IDS.",
+    if not chat_allowed(chat.id):
+        await reply_here(
+            update,
+            f"Nhóm này chưa được mở bot (chat_id={chat.id}). Admin thêm id vào ALLOWED_CHAT_IDS.",
+        )
+        return False
+    sync_group(context, chat)
+    reg = get_groups(context)
+    if not reg.is_enabled(chat.id):
+        await reply_here(update, "Nhóm này đang tắt bot.")
+        return False
+    return True
+
+
+async def send_bill_result(update: Update, info: dict, r: dict, direction: str) -> None:
+    text = format_bill_card(info, r, direction)
+    kb = bill_keyboard(r["bill_id"], direction) if r.get("bill_id") and r.get("ok") else None
+    if not info.get("complete"):
+        missing = ", ".join(info.get("missing") or [])
+        text += f"\n⚠️ Thiếu: {missing}. Gửi thêm STK/NH/số tiền/ND hoặc ảnh QR."
+
+    if info.get("vietqr_url") and info.get("amount"):
+        try:
+            await update.effective_message.reply_photo(
+                photo=info["vietqr_url"],
+                caption=text[:1024],
+                reply_markup=kb,
+            )
+            return
+        except Exception:
+            log.warning("Gửi QR ảnh thất bại, fallback text")
+    await update.effective_message.reply_text(text, reply_markup=kb)
+
+
+async def process_payment_image(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    raw: bytes,
+    caption: str | None,
+) -> None:
+    """Đọc ảnh QR/bill + gộp caption chữ → submit + trả lời đúng nhóm."""
+    lg = get_ledger(context)
+    user = update.effective_user
+    chat = update.effective_chat
+    await ensure_user(lg, update, context)
+    kid = resolve_ket_id(chat.id)
+    direction = direction_from_caption(caption)
+
+    try:
+        img_info = scan_image(raw)
+    except Exception:
+        log.exception("scan_image failed chat=%s", chat.id if chat else "?")
+        img_info = {}
+
+    text_info = parse_text(caption) if caption and len(caption.strip()) >= 3 else {}
+    # Bỏ hướng "ra/out" khỏi parse nếu caption chỉ là hướng
+    if caption and caption.strip().lower() in ("ra", "out", "chi", "xuất", "xuat"):
+        text_info = {}
+
+    info = merge_payment_info(img_info, text_info)
+    log.info(
+        "payment_image chat=%s user=%s amount=%s account=%s bank=%s trust=%s",
+        chat.id, uid(user), info.get("amount"), info.get("account"), info.get("bank"), info.get("trust"),
     )
-    return False
+
+    if not (info.get("amount") or info.get("account") or info.get("bank") or info.get("vietqr_url")):
+        await reply_here(
+            update,
+            "Chưa đọc được thông tin thanh toán từ ảnh. "
+            "Gửi lại ảnh QR rõ hơn hoặc dán CK: STK | Ngân hàng | số tiền | nội dung.",
+        )
+        return
+
+    r = lg.submit_bill(
+        kid,
+        info,
+        actor=uid(user),
+        direction=direction,
+        image_bytes=raw,
+    )
+    await send_bill_result(update, info, r, direction)
 
 
 # ---- Handlers -----------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate_chat(update):
+    if not await gate_chat(update, context):
         return
     lg = get_ledger(context)
     await ensure_user(lg, update, context)
     chat = update.effective_chat
     where = "nhóm này" if chat and chat.type in GROUP_TYPES else "chat này"
+    feats = ", ".join(k for k, v in SYNCED_FEATURES.items() if v)
     await reply_here(
         update,
-        f"Bot két sẵn sàng tại {where}.\n"
-        "• Gửi ảnh bill hoặc dán CK (STK · NH · số tiền · ND) → QR / phiếu chờ\n"
+        f"Bot két sẵn sàng tại {where} (đồng bộ chức năng mọi nhóm).\n"
+        "• Dán CK hoặc gửi ảnh QR/bill → đọc STK, NH, số tiền, ND → QR / phiếu\n"
         "• Nút Xác nhận = cộng két · Xuất bill = trừ két\n"
-        "• Lệnh: số dư · bill chờ · xuất excel · chốt sổ · xác nhận #id\n"
-        "• /kiemtra — kiểm tra bot có thấy tin trong nhóm không",
+        "• /kiemtra · /nhom — kiểm tra nhóm & chức năng\n"
+        f"• Đang bật: {feats}",
     )
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await gate_chat(update):
+    if not await gate_chat(update, context):
         return
     await reply_here(
         update,
@@ -237,99 +308,112 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "xác nhận #12 · xuất bill 7 · hủy #5\n"
         "chi 500k tiền điện · thu 1tr\n"
         "xuất excel · chốt sổ\n"
-        "/kiemtra — bot có nhận tin nhóm?\n"
-        "Ảnh bill: gửi ảnh (mặc định tiền vào). Caption 'ra'/'out' = tiền ra.",
+        "/kiemtra · /nhom\n"
+        "Gửi ảnh QR/bill (photo hoặc file ảnh) hoặc dán CK chữ.",
     )
 
 
 async def cmd_kiemtra(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Kiểm tra bot có là admin nhóm + có trả lời đúng chat này không."""
     chat = update.effective_chat
     user = update.effective_user
     if not chat or not user:
         return
-
+    sync_group(context, chat)
+    feats = get_groups(context).features(chat.id)
     lines = [
         f"Chat id: `{chat.id}`",
         f"Loại: {chat.type}",
         f"User id: `{user.id}`",
-        f"Allowed: {'có' if chat_allowed(chat.id) else 'KHÔNG — thêm vào ALLOWED_CHAT_IDS'}",
+        f"Két id: `{resolve_ket_id(chat.id)}`",
+        f"Allowed: {'có' if chat_allowed(chat.id) else 'KHÔNG'}",
+        "Chức năng đồng bộ:",
     ]
+    for k, v in feats.items():
+        lines.append(f"  • {k}: {'ON' if v else 'off'}")
 
     if chat.type in GROUP_TYPES:
         try:
             me = await context.bot.get_chat_member(chat.id, context.bot.id)
             bot_admin = me.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
-            lines.append(f"Bot là quản trị nhóm: {'CÓ' if bot_admin else 'KHÔNG'}")
+            lines.append(f"Bot quản trị nhóm: {'CÓ' if bot_admin else 'KHÔNG'}")
             if not bot_admin:
                 lines.append(
-                    "→ Cấp bot làm Quản trị nhóm (hoặc tắt Privacy trên BotFather: /setprivacy → Disable) "
-                    "để bot thấy tin thường, không chỉ lệnh /slash."
+                    "→ Cấp bot làm Quản trị (hoặc BotFather /setprivacy → Disable) "
+                    "để đọc hết tin CK + ảnh QR khách gửi."
                 )
         except Exception as exc:
             lines.append(f"Không kiểm tra được quyền bot: {exc}")
-    else:
-        lines.append("Đây là chat riêng — bot luôn thấy tin.")
 
     lg = get_ledger(context)
     role = await ensure_user(lg, update, context)
     lines.append(f"Quyền sổ của bạn: {role or 'chưa có'}")
-    lines.append("Bot sẽ trả lời NGAY trong chat này (không chuyển sang admin).")
+    lines.append("Bot trả lời NGAY trong chat này.")
+    await reply_here(update, "\n".join(lines))
 
+
+async def cmd_nhom(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Liệt kê nhóm đã đồng bộ cấu hình (admin)."""
+    if not await gate_chat(update, context):
+        return
+    lg = get_ledger(context)
+    role = await ensure_user(lg, update, context)
+    if role not in ("admin", "quan_tri"):
+        await reply_here(update, "Chỉ Quản trị/Admin xem danh sách nhóm.")
+        return
+    rows = get_groups(context).list_groups()
+    if not rows:
+        await reply_here(update, "Chưa có nhóm nào được ghi nhận.")
+        return
+    lines = [f"Đã đồng bộ {len(rows)} nhóm (cùng chức năng):"]
+    for g in rows[:30]:
+        on = "ON" if g.get("enabled") else "off"
+        lines.append(f"• {g.get('title') or '?'} (`{g['chat_id']}`) {on}")
     await reply_here(update, "\n".join(lines))
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Nhận ảnh bill → scan → lưu pending → trả lời luôn đúng nhóm gửi."""
-    if not await gate_chat(update):
+    if not await gate_chat(update, context):
         return
-    lg = get_ledger(context)
-    user = update.effective_user
-    chat = update.effective_chat
-    await ensure_user(lg, update, context)
-    log.info("photo chat=%s user=%s", chat.id if chat else "?", uid(user) if user else "?")
-
+    feats = get_groups(context).features(update.effective_chat.id)
+    if not feats.get("read_qr_image", True):
+        await reply_here(update, "Nhóm này đang tắt đọc ảnh QR.")
+        return
     photo = update.message.photo[-1]
     tg_file = await photo.get_file()
     raw = bytes(await tg_file.download_as_bytearray())
+    await process_payment_image(update, context, raw, update.message.caption)
 
-    caption = (update.message.caption or "").strip().lower()
-    direction = "out" if caption in ("ra", "out", "chi", "xuất", "xuat") else config.DEFAULT_DIRECTION
 
-    try:
-        info = scan_image(raw)
-    except Exception:
-        log.exception("scan_image failed")
-        await reply_here(update, "Không đọc được ảnh. Gửi lại ảnh rõ hơn hoặc dán CK dạng chữ.")
+async def handle_image_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ảnh QR/bill gửi dạng file (không nén) — cùng luồng đọc như photo."""
+    if not await gate_chat(update, context):
+        return
+    if not config.READ_IMAGE_DOCUMENTS:
+        return
+    feats = get_groups(context).features(update.effective_chat.id)
+    if not feats.get("read_image_file", True):
         return
 
-    r = lg.submit_bill(
-        ket_id(chat.id),
-        info,
-        actor=uid(user),
-        direction=direction,
-        image_bytes=raw,
-    )
-    text = format_bill_card(info, r, direction)
-    kb = bill_keyboard(r["bill_id"], direction) if r.get("bill_id") and r.get("ok") else None
+    doc = update.message.document
+    if not doc:
+        return
+    mime = (doc.mime_type or "").lower()
+    name = (doc.file_name or "").lower()
+    ok_mime = mime.startswith(IMAGE_MIME_PREFIXES)
+    ok_name = any(name.endswith(suf) for suf in IMAGE_SUFFIXES)
+    if not (ok_mime or ok_name):
+        return
+    if doc.file_size and doc.file_size > 15 * 1024 * 1024:
+        await reply_here(update, "Ảnh quá nặng (>15MB). Gửi ảnh nhỏ hơn hoặc dạng photo.")
+        return
 
-    if info.get("vietqr_url") and info.get("amount"):
-        try:
-            await update.message.reply_photo(
-                photo=info["vietqr_url"],
-                caption=text[:1024],
-                reply_markup=kb,
-            )
-            return
-        except Exception:
-            log.warning("Gửi QR ảnh thất bại, fallback text")
-
-    await update.message.reply_text(text, reply_markup=kb)
+    tg_file = await doc.get_file()
+    raw = bytes(await tg_file.download_as_bytearray())
+    await process_payment_image(update, context, raw, update.message.caption)
 
 
 async def handle_ck_or_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Tin chữ: lệnh NLU hoặc paste CK — luôn reply đúng nhóm khách gửi."""
-    if not await gate_chat(update):
+    if not await gate_chat(update, context):
         return
     lg = get_ledger(context)
     user = update.effective_user
@@ -339,16 +423,19 @@ async def handle_ck_or_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     await ensure_user(lg, update, context)
-    kid = ket_id(chat.id)
+    kid = resolve_ket_id(chat.id)
     actor = uid(user)
+    feats = get_groups(context).features(chat.id)
     log.info("text chat=%s user=%s len=%s", chat.id, actor, len(text))
 
     cmd = understand(text)
 
-    # --- Lệnh ---
+    if cmd["intent"] != "unknown" and not feats.get("commands", True):
+        await reply_here(update, "Lệnh chữ đang tắt trên nhóm này.")
+        return
+
     if cmd["intent"] == "balance":
-        bal = lg.balance(kid)
-        await reply_here(update, f"Số dư két: {vnd(bal)}")
+        await reply_here(update, f"Số dư két: {vnd(lg.balance(kid))}")
         return
 
     if cmd["intent"] == "pending":
@@ -392,8 +479,7 @@ async def handle_ck_or_command(update: Update, context: ContextTypes.DEFAULT_TYP
         direction = "in" if cmd["intent"] == "manual_in" else "out"
         r = lg.create_manual(kid, direction, cmd["amount"], cmd.get("note") or "", actor)
         if r.get("ok") and r.get("bill_id"):
-            kb = bill_keyboard(r["bill_id"], direction)
-            await update.message.reply_text(r["message"], reply_markup=kb)
+            await update.message.reply_text(r["message"], reply_markup=bill_keyboard(r["bill_id"], direction))
         else:
             await reply_here(update, r["message"])
         return
@@ -410,37 +496,24 @@ async def handle_ck_or_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     if cmd["intent"] == "close":
-        note = cmd.get("note")
-        r = lg.close_period(kid, actor, note=note)
+        r = lg.close_period(kid, actor, note=cmd.get("note"))
         await reply_here(update, r["message"])
         return
 
-    # --- Paste CK (parse local) ---
+    # Paste CK
+    if not feats.get("read_ck_text", True):
+        if cmd["intent"] == "unknown":
+            return
+        await reply_here(update, "Đọc CK chữ đang tắt trên nhóm này.")
+        return
+
     if looks_like_ck(text) or config.ALWAYS_REPLY_ON_CK:
         info = parse_text(text)
         if info.get("amount") or info.get("account") or info.get("bank"):
             direction = config.DEFAULT_DIRECTION
             r = lg.submit_bill(kid, info, actor=actor, direction=direction, source="manual")
-            card = format_bill_card(info, r, direction)
-            kb = bill_keyboard(r["bill_id"], direction) if r.get("bill_id") and r.get("ok") else None
-
-            if info.get("vietqr_url") and info.get("amount"):
-                try:
-                    await update.message.reply_photo(
-                        photo=info["vietqr_url"],
-                        caption=card[:1024],
-                        reply_markup=kb,
-                    )
-                    return
-                except Exception:
-                    log.warning("QR URL gửi lỗi, gửi text")
-
-            if not info.get("complete"):
-                missing = ", ".join(info.get("missing") or [])
-                card += f"\n⚠️ Thiếu: {missing}. Gửi thêm để ra QR."
-            await update.message.reply_text(card, reply_markup=kb)
+            await send_bill_result(update, info, r, direction)
             return
-
         if cmd["intent"] == "unknown":
             return
 
@@ -448,15 +521,18 @@ async def handle_ck_or_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Nút xác nhận / xuất / hủy — answer đúng 1 lần, reply đúng nhóm."""
     q = update.callback_query
-    if not await gate_chat(update):
+    if not await gate_chat(update, context):
         await q.answer("Nhóm chưa mở bot.", show_alert=True)
         return
+    feats = get_groups(context).features(update.effective_chat.id)
+    if not feats.get("confirm_buttons", True):
+        await q.answer("Nút xác nhận đang tắt.", show_alert=True)
+        return
+
     lg = get_ledger(context)
     await ensure_user(lg, update, context)
     actor = uid(q.from_user)
-
     data = (q.data or "").split(":")
     if len(data) != 2:
         await q.answer("Nút không hợp lệ.", show_alert=True)
@@ -490,11 +566,39 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         log.exception("callback reply")
 
 
+async def on_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Bot được thêm vào nhóm → bật ngay cùng cấu hình đồng bộ."""
+    mcm = update.my_chat_member
+    if not mcm:
+        return
+    chat = mcm.chat
+    new = mcm.new_chat_member
+    if new.user.id != context.bot.id:
+        return
+    status = new.status
+    if status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR):
+        sync_group(context, chat)
+        log.info("Bot joined/enabled chat=%s title=%s", chat.id, getattr(chat, "title", None))
+        try:
+            await context.bot.send_message(
+                chat.id,
+                "Bot két đã vào nhóm — cấu hình đồng bộ với các nhóm khác.\n"
+                "Khách gửi ảnh QR/bill hoặc dán CK → bot đọc và trả lời tại đây.\n"
+                "Nên cấp bot làm Quản trị (hoặc tắt Privacy) để đọc hết tin.\n"
+                "Gõ /kiemtra để kiểm tra.",
+            )
+        except Exception:
+            log.warning("Không gửi được tin chào nhóm %s", chat.id)
+    elif status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+        get_groups(context).touch(chat.id, title=getattr(chat, "title", None), enabled=False)
+        log.info("Bot left/disabled chat=%s", chat.id)
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.exception("Handler error: %s", context.error)
     if isinstance(update, Update) and update.effective_message:
         try:
-            await update.effective_message.reply_text("Lỗi xử lý. Thử lại hoặc gửi lại CK.")
+            await update.effective_message.reply_text("Lỗi xử lý. Thử lại hoặc gửi lại CK/ảnh QR.")
         except Exception:
             pass
 
@@ -508,25 +612,32 @@ def build_app() -> Application:
         allow_negative=config.ALLOW_NEGATIVE,
         require_customer=config.REQUIRE_CUSTOMER,
     )
+    groups = GroupRegistry(config.GROUPS_DB_PATH)
     app = Application.builder().token(token).build()
     app.bot_data["ledger"] = lg
+    app.bot_data["groups"] = groups
 
     app.add_handler(CommandHandler(["start", "batdau"], cmd_start))
     app.add_handler(CommandHandler(["help", "trogiup"], cmd_help))
     app.add_handler(CommandHandler(["kiemtra", "check"], cmd_kiemtra))
+    app.add_handler(CommandHandler(["nhom", "groups"], cmd_nhom))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_image_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_ck_or_command))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(ChatMemberHandler(on_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_error_handler(on_error)
     return app
 
 
 def main() -> None:
     log.info(
-        "Khởi động bot két | db=%s | allowed_chats=%s | auto_grant=%s",
+        "Khởi động bot két | db=%s | groups=%s | allowed=%s | shared_ket=%s | sync=%s",
         config.DB_PATH,
+        config.GROUPS_DB_PATH,
         config.ALLOWED_CHAT_IDS or "ALL",
-        config.AUTO_GRANT_GROUP_MEMBERS,
+        config.SHARED_KET_ID or "(per-chat)",
+        config.SYNC_ALL_GROUPS,
     )
     app = build_app()
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)

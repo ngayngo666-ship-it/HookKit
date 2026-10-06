@@ -57,11 +57,18 @@ ALLOWED_CHAT_IDS = [
 ]
 # Tự cấp quyền: thành viên nhóm = nhân viên; admin Telegram của nhóm = quản trị
 AUTO_GRANT_GROUP_MEMBERS = _env_bool("AUTO_GRANT_GROUP_MEMBERS", True)
+# Đồng bộ chức năng mọi nhóm (đọc CK + ảnh QR + nút + lệnh) — luôn bật
+SYNC_ALL_GROUPS = _env_bool("SYNC_ALL_GROUPS", True)
+# Để trống = mỗi nhóm một sổ riêng. Đặt 1 id (vd. shared) thì mọi nhóm dùng chung một két.
+SHARED_KET_ID = _env("SHARED_KET_ID")
+# Đọc ảnh gửi dạng file/document (không chỉ photo nén)
+READ_IMAGE_DOCUMENTS = _env_bool("READ_IMAGE_DOCUMENTS", True)
 
 # --- Lưu trữ ---
 # Ưu tiên volume bền (/data trên Railway). Fallback thư mục local.
 DATA_DIR = Path(_env("DATA_DIR", str(ROOT / "data")))
 DB_PATH = Path(_env("DB_PATH", str(DATA_DIR / "ket.db")))
+GROUPS_DB_PATH = Path(_env("GROUPS_DB_PATH", str(DATA_DIR / "groups.db")))
 
 # --- Ledger ---
 BIG_AMOUNT = _env_int("BIG_AMOUNT", 50_000_000)
