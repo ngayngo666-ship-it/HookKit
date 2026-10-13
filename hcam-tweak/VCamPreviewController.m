@@ -2,6 +2,7 @@
 #import "VCamConfiguration.h"
 #import "VCamFrameProcessor.h"
 #import <CoreImage/CoreImage.h>
+#import <UIKit/UIKit.h>
 
 @interface VCamPreviewController ()
 @property (nonatomic, weak) AVCaptureVideoPreviewLayer *previewLayer;

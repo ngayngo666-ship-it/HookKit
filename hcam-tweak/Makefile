@@ -11,7 +11,6 @@ VCamInjection_FRAMEWORKS := AVFoundation AudioToolbox CoreImage CoreMedia CoreVi
 
 VCamOverlay_FILES := OverlayTweak.xm VCamOverlayController.m VCamConfiguration.m Team247OverlayView.swift
 VCamOverlay_CFLAGS := -fobjc-arc
-VCamOverlay_SWIFTFLAGS := -disable-sandbox
 VCamOverlay_FRAMEWORKS := Foundation SwiftUI UIKit UniformTypeIdentifiers
 
 include $(THEOS_MAKE_PATH)/tweak.mk

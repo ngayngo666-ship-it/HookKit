@@ -182,7 +182,8 @@ struct Team247OverlayView: View {
     private var sourceView: some View {
         VStack(spacing: 12) {
             Button("Camera thật") { store.useRealCamera() }
-                .buttonStyle(store.sourceType == .realCamera ? .borderedProminent : .bordered)
+                .buttonStyle(.borderedProminent)
+                .tint(store.sourceType == .realCamera ? .blue : .gray)
             if store.mediaSlots.isEmpty {
                 Text("Chưa có ảnh/video.\nThêm trong app VCam.")
                     .font(.caption).multilineTextAlignment(.center).foregroundStyle(.secondary)
