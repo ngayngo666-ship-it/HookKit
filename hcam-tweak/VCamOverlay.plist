@@ -1,0 +1,6 @@
+{
+    Filter = {
+        /* The floating bubble lives on SpringBoard, so the overlay dylib loads there only. */
+        Bundles = ( "com.apple.springboard" );
+    };
+}

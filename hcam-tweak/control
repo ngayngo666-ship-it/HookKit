@@ -1,0 +1,10 @@
+Package: com.aech.vcam
+Name: HCAMV2
+Version: 0.5.0-1
+Architecture: iphoneos-arm64
+Description: Virtual camera for iOS. Replaces the live camera feed, still photos and preview in chosen apps with an image or video, driven by a floating SpringBoard control panel.
+Maintainer: aech
+Author: aech
+Section: Tweaks
+Depends: ellekit, firmware (>= 15.0)
+Conflicts: com.aech.vcam.ssh-bootstrap

@@ -1,0 +1,8 @@
+{
+    Filter = {
+        /* Loads into every UIKit app; the dylib then gates itself at runtime to the apps
+           chosen in the control panel (VCamConfiguration -isActiveForBundleIdentifier:).
+           Narrow this to specific bundle ids if you prefer a fixed app list. */
+        Bundles = ( "com.apple.UIKit" );
+    };
+}

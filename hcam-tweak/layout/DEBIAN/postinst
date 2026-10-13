@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# Load the helper daemon and refresh SpringBoard so the bubble appears immediately.
+if [ -x /var/jb/bin/launchctl ]; then
+    /var/jb/bin/launchctl bootstrap system /var/jb/Library/LaunchDaemons/com.aech.vcam.bridge.plist 2>/dev/null || true
+fi
+killall -9 SpringBoard 2>/dev/null || true
+
+exit 0
