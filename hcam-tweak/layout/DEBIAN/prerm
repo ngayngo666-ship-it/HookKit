@@ -1,0 +1,8 @@
+#!/bin/sh
+
+# Stop the helper daemon before files are removed.
+if [ -x /var/jb/bin/launchctl ]; then
+    /var/jb/bin/launchctl bootout system /var/jb/Library/LaunchDaemons/com.aech.vcam.bridge.plist 2>/dev/null || true
+fi
+
+exit 0
