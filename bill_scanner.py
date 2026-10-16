@@ -412,6 +412,28 @@ def finalize(info: dict) -> dict:
     return info
 
 
+_MERGE_FIELDS = (
+    "amount", "account", "bank", "bank_name", "bank_bin",
+    "name", "content", "txn", "time", "status",
+)
+
+
+def merge_payment_info(primary: dict, *extras: dict) -> dict:
+    """Gộp ảnh QR/OCR + caption/paste chữ: thiếu trường nào lấy từ nguồn còn lại (không mất số tiền)."""
+    out = dict(primary or {})
+    for extra in extras:
+        if not extra:
+            continue
+        for key in _MERGE_FIELDS:
+            if not out.get(key) and extra.get(key):
+                out[key] = extra[key]
+        # Giữ trust cao hơn nếu có
+        rank = {"low": 0, "medium": 1, "high": 2}
+        if rank.get(extra.get("trust"), -1) > rank.get(out.get("trust"), -1):
+            out["trust"] = extra["trust"]
+    return finalize(out)
+
+
 def crc16_ccitt(data: bytes) -> int:
     crc = 0xFFFF
     for b in data:

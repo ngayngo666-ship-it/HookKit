@@ -4,3 +4,7 @@ __pycache__/
 *.db-wal
 *.db-shm
 .venv/
+.env
+.env.local
+data/
+*.xlsx
